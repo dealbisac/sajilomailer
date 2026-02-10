@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Raleway } from "next/font/google";
+import { ClerkProvider } from "@clerk/nextjs";
 import "./globals.css";
 
 const raleway = Raleway({
@@ -9,7 +10,7 @@ const raleway = Raleway({
 
 export const metadata: Metadata = {
   title: "Sajilo Mailer",
-  description: "A simple and efficient email sending service built with Next.js and TypeScript.",
+  description: "A simple and efficient email sending service built with personalized templates.",
 };
 
 export default function RootLayout({
@@ -18,10 +19,12 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
+    <ClerkProvider>
     <html lang="en">
     <body className={`${raleway.variable} font-sans`}>
       {children}
     </body>
   </html>
+  </ClerkProvider>
   );
 }
