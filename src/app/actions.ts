@@ -41,57 +41,74 @@ export async function saveSettings(formData: FormData) {
 // 1. Helper to replace %variable% with actual data
 function replaceVariables(template: string, data: Record<string, string>) {
     return template.replace(/%(\w+)%/g, (_, key) => data[key] || "");
-  }
+}
+
+// Defined return type for clarity (New addition for Analytics)
+type SendResult = {
+  email: string;
+  status: 'success' | 'failed';
+  error?: string;
+};
   
-  // 2. The Bulk Send Action
-  export async function sendBulkEmails(
-    recipients: Record<string, string>[], 
-    subjectTemplate: string, 
-    bodyTemplate: string
-  ) {
-    const user = await currentUser();
-    if (!user) throw new Error("Not authorized");
+// 2. The Bulk Send Action (Updated for Detailed Analytics)
+export async function sendBulkEmails(
+  recipients: Record<string, string>[], 
+  subjectTemplate: string, 
+  bodyTemplate: string
+): Promise<SendResult[]> {
   
-    // A. Fetch User's SMTP Settings
-    const settings = await db.query.smtpSettings.findFirst({
-      where: eq(smtpSettings.userId, user.id)
-    });
-  
-    if (!settings) throw new Error("Please configure SMTP settings first!");
-  
-    // B. Initialize Nodemailer
-    const transporter = nodemailer.createTransport({
-      host: settings.host,
-      port: settings.port,
-      secure: settings.port === 465, // True for port 465, false for others
-      auth: {
-        user: settings.user,
-        pass: settings.password, // Decrypt this if you used encryption!
-      },
-    });
-  
-    // C. Loop and Send
-    let successCount = 0;
-    let failedCount = 0;
-  
-    for (const recipient of recipients) {
-      try {
-        // Personalize the content
-        const personalizedBody = replaceVariables(bodyTemplate, recipient);
-        const personalizedSubject = replaceVariables(subjectTemplate, recipient);
-  
-        await transporter.sendMail({
-          from: settings.fromEmail,
-          to: recipient.email, // Ensure your CSV has an "email" column!
-          subject: personalizedSubject,
-          html: personalizedBody,
-        });
-        successCount++;
-      } catch (error) {
-        console.error(`Failed to send to ${recipient.email}:`, error);
-        failedCount++;
-      }
+  const user = await currentUser();
+  if (!user) throw new Error("Not authorized");
+
+  // A. Fetch User's SMTP Settings
+  const settings = await db.query.smtpSettings.findFirst({
+    where: eq(smtpSettings.userId, user.id)
+  });
+
+  if (!settings) throw new Error("Please configure SMTP settings first!");
+
+  // B. Initialize Nodemailer
+  const transporter = nodemailer.createTransport({
+    host: settings.host,
+    port: settings.port,
+    secure: settings.port === 465, // True for port 465, false for others
+    auth: {
+      user: settings.user,
+      pass: settings.password, // Decrypt this if you used encryption!
+    },
+  });
+
+  // C. Loop and Send
+  const results: SendResult[] = [];
+
+  for (const recipient of recipients) {
+    try {
+      // Personalize the content
+      const personalizedBody = replaceVariables(bodyTemplate, recipient);
+      const personalizedSubject = replaceVariables(subjectTemplate, recipient);
+
+      await transporter.sendMail({
+        from: settings.fromEmail,
+        to: recipient.email, // Ensure your CSV has an "email" column!
+        subject: personalizedSubject,
+        html: personalizedBody,
+      });
+      
+      // Log success
+      results.push({ email: recipient.email, status: 'success' });
+      
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } catch (error: any) {
+      console.error(`Failed to send to ${recipient.email}:`, error);
+      
+      // Log failure with specific error message
+      results.push({ 
+        email: recipient.email, 
+        status: 'failed', 
+        error: error.message || 'Unknown error' 
+      });
     }
-  
-    return { success: true, sent: successCount, failed: failedCount };
   }
+
+  return results;
+}
