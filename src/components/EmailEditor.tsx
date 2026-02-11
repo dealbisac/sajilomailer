@@ -1,15 +1,23 @@
 'use client'
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import Papa from "papaparse";
 import { sendBulkEmails } from "@/app/actions";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "sonner";
-import { Send } from "lucide-react";
+import { Send, Trash2 } from "lucide-react"; // Import Trash icon
 import TiptapEditor from "./TiptapEditor";
-import CampaignSummary from "./CampaignSummary"; 
+import CampaignSummary from "./CampaignSummary";
+
+// Define the shape of our log based on actions.ts
+type LogEntry = {
+  email: string;
+  status: 'success' | 'failed';
+  error?: string;
+  timestamp: string;
+};
 
 export default function EmailEditor() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -17,15 +25,33 @@ export default function EmailEditor() {
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   
-  // States
   const [isSending, setIsSending] = useState(false);
-  const [isComplete, setIsComplete] = useState(false); // state for showing summary
+  const [isComplete, setIsComplete] = useState(false);
   const [progress, setProgress] = useState(0);
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [logs, setLogs] = useState<any[]>([]);
+  const [logs, setLogs] = useState<LogEntry[]>([]);
+
+  // 1. Load from Local Storage on Mount
+  useEffect(() => {
+    const savedLogs = localStorage.getItem("campaign_logs");
+    const savedStatus = localStorage.getItem("campaign_status");
+    
+    if (savedLogs) {
+      const parsedLogs = JSON.parse(savedLogs);
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setLogs(parsedLogs);
+      if (parsedLogs.length > 0) {
+        setIsComplete(savedStatus === "complete");
+      }
+    }
+  }, []);
+
+  // 2. Helper to Save to Local Storage
+  const updateLogs = (newLogs: LogEntry[]) => {
+    setLogs(newLogs);
+    localStorage.setItem("campaign_logs", JSON.stringify(newLogs));
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    // ... (Keep existing file upload logic same as before) ...
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -51,29 +77,47 @@ export default function EmailEditor() {
     
     setIsSending(true);
     setIsComplete(false);
-    setProgress(0);
-    setLogs([]);
+    localStorage.setItem("campaign_status", "sending");
+    
+    // Don't clear logs if we are resuming/adding to them, but here we start fresh
+    // If you want to append, remove this line.
+    const startingLogs: LogEntry[] = []; 
+    updateLogs(startingLogs); 
     
     const BATCH_SIZE = 5; 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let allResults: any[] = [];
-
+    
     try {
       for (let i = 0; i < recipients.length; i += BATCH_SIZE) {
         const batch = recipients.slice(i, i + BATCH_SIZE);
         
-        // Use the new detailed server action
-        const batchResults = await sendBulkEmails(batch, subject, body);
+        // --- REAL SERVER ACTION CALL ---
+        // This now expects the array return type we defined in actions.ts
+        const serverResults = await sendBulkEmails(batch, subject, body);
         
-        allResults = [...allResults, batchResults]; // Assuming batchResults is an object, not an array
-        setLogs(prev => [...prev, batchResults]);
+        // Map server results to our log format with timestamps
+        const newEntries: LogEntry[] = serverResults.map(res => ({
+          email: res.email,
+          status: res.status,
+          error: res.error,
+          timestamp: new Date().toLocaleTimeString()
+        }));
+
+        // Append to existing logs using functional state update to be safe
+        setLogs(prev => {
+          const updated = [...prev, ...newEntries];
+          localStorage.setItem("campaign_logs", JSON.stringify(updated)); // Save chunk
+          return updated;
+        });
 
         // Update Progress
         const currentProgress = Math.min(100, Math.round(((i + batch.length) / recipients.length) * 100));
         setProgress(currentProgress);
       }
+      
       toast.success("Campaign finished!");
-      setIsComplete(true); // Switch view
+      setIsComplete(true);
+      localStorage.setItem("campaign_status", "complete");
+
     } catch (e) {
       toast.error("Campaign stopped due to error.");
       console.error(e);
@@ -83,18 +127,23 @@ export default function EmailEditor() {
   };
 
   const resetCampaign = () => {
-    setIsComplete(false);
-    setRecipients([]);
-    setSubject("");
-    setBody("");
-    setLogs([]);
-    setProgress(0);
+    if (confirm("Are you sure? This will clear your current report.")) {
+      setIsComplete(false);
+      setRecipients([]);
+      setSubject("");
+      setBody("");
+      setLogs([]);
+      setProgress(0);
+      localStorage.removeItem("campaign_logs");
+      localStorage.removeItem("campaign_status");
+      toast.info("Campaign cleared.");
+    }
   };
 
   // --- RENDER ---
 
-  // 1. If Campaign is Complete, show Analytics
-  if (isComplete) {
+  // 1. If Campaign is Complete (or has logs), show Analytics
+  if (isComplete || (logs.length > 0 && !isSending && recipients.length === 0)) {
     const successCount = logs.filter(l => l.status === 'success').length;
     const failedCount = logs.filter(l => l.status === 'failed').length;
     
@@ -107,6 +156,12 @@ export default function EmailEditor() {
           logs={logs}
           onReset={resetCampaign}
         />
+        {/* Helper to show partially finished campaigns */}
+        {!isComplete && (
+           <div className="text-center mt-4 text-sm text-gray-500">
+             (This is a saved session from your local storage)
+           </div>
+        )}
       </div>
     );
   }
@@ -114,7 +169,13 @@ export default function EmailEditor() {
   // 2. Otherwise, show Editor
   return (
     <div className="w-full max-w-4xl mx-auto bg-white p-6 rounded-lg shadow-sm border">
-      <h2 className="text-2xl font-bold mb-6">New Campaign</h2>
+      <div className="flex justify-between items-center mb-6">
+        <h2 className="text-2xl font-bold">New Campaign</h2>
+        {/* Clear Storage Button for safety */}
+        <Button variant="ghost" size="sm" onClick={resetCampaign} className="text-red-500 hover:text-red-700 hover:bg-red-50">
+           <Trash2 className="w-4 h-4 mr-2" /> Clear Session
+        </Button>
+      </div>
 
       <Tabs defaultValue="compose" className="w-full">
         <TabsList className="grid w-full grid-cols-2 mb-4">
@@ -123,7 +184,6 @@ export default function EmailEditor() {
         </TabsList>
 
         <TabsContent value="compose" className="space-y-4">
-          {/* File Upload */}
           <div className="grid w-full max-w-sm items-center gap-1.5">
              <label className="text-sm font-medium">Recipients (CSV)</label>
              <input type="file" accept=".csv" onChange={handleFileUpload} className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-black file:text-white hover:file:bg-gray-800"/>
@@ -166,7 +226,6 @@ export default function EmailEditor() {
                <strong>To:</strong> {recipients[0]?.email || "example@mail.com"} <br/>
                <strong>Subject:</strong> {subject.replace(/%(\w+)%/g, (_, k) => recipients[0]?.[k] || "")}
              </div>
-             {/* Simple preview that replaces variables for the first user */}
              <div 
                dangerouslySetInnerHTML={{ 
                  __html: recipients.length > 0 
